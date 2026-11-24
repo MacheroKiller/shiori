@@ -1,4 +1,4 @@
-use reqwest::Client;
+use reqwest::{Client, Response};
 
 pub struct HttpClient {
     client: Client,
@@ -16,13 +16,15 @@ impl HttpClient {
         T: serde::de::DeserializeOwned,
         B: serde::Serialize + ?Sized,
     {
-        let res = self
-            .client
-            .post(url)
-            .json(body)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(res.json::<T>().await?)
+        let response = self.post_raw(url, body).await?.error_for_status()?;
+
+        Ok(response.json::<T>().await?)
+    }
+
+    pub async fn post_raw<B>(&self, url: &str, body: &B) -> Result<Response, reqwest::Error>
+    where
+        B: serde::Serialize + ?Sized,
+    {
+        self.client.post(url).json(body).send().await
     }
 }

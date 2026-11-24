@@ -1,17 +1,19 @@
-#[derive(Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReleaseSource {
     AniList,
     TMDB,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseDate {
     pub year: Option<u32>,
     pub month: Option<u32>,
     pub day: Option<u32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
     pub id: Option<u64>,
     pub external_id: u32,
@@ -25,6 +27,7 @@ pub struct Release {
     pub episodes: Option<u32>,
     pub duration: Option<u32>,
     pub last_provider_update: Option<u64>,
+    pub season_id: Option<i64>,
 }
 
 impl ReleaseDate {

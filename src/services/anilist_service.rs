@@ -105,6 +105,7 @@ impl AniListService {
                     last_provider_update: Some(value.updated_at),
                     source: ReleaseSource::AniList,
                     release_date,
+                    season_id: None,
                 };
                 release_return
             })

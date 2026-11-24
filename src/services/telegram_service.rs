@@ -3,7 +3,7 @@ use crate::{
         SendMessageRequest, SendPhotoRequest, TelegramClient, TelegramError,
     },
     models::{release::Release, release_event::ReleaseEvent},
-    services::notification_policy::{self, NotificationPolicy},
+    services::notification_policy::NotificationPolicy,
 };
 
 pub struct TelegramService {
@@ -40,17 +40,7 @@ impl TelegramService {
                             parse_mode: Some("HTML".to_string()),
                         };
 
-                        let response = self.telegram_client.send_photo(request).await?;
-
-                        if !response.ok {
-                            return Err(TelegramError::TelegramApi(
-                                response
-                                    .description
-                                    .as_deref()
-                                    .unwrap_or("Unknown")
-                                    .to_string(),
-                            ));
-                        }
+                        self.telegram_client.send_photo(request).await?;
                     } else {
                         let request = SendMessageRequest {
                             chat_id: self.chat_id.clone(),
@@ -59,17 +49,7 @@ impl TelegramService {
                             parse_mode: Some("HTML".to_string()),
                         };
 
-                        let response = self.telegram_client.send_message(request).await?;
-
-                        if !response.ok {
-                            return Err(TelegramError::TelegramApi(
-                                response
-                                    .description
-                                    .as_deref()
-                                    .unwrap_or("Unknown")
-                                    .to_string(),
-                            ));
-                        }
+                        self.telegram_client.send_message(request).await?;
                     }
                 }
 
@@ -83,17 +63,7 @@ impl TelegramService {
                         parse_mode: Some("HTML".to_string()),
                     };
 
-                    let response = self.telegram_client.send_message(request).await?;
-
-                    if !response.ok {
-                        return Err(TelegramError::TelegramApi(
-                            response
-                                .description
-                                .as_deref()
-                                .unwrap_or("Unknown")
-                                .to_string(),
-                        ));
-                    }
+                    self.telegram_client.send_message(request).await?;
                 }
             }
         }
@@ -247,6 +217,7 @@ impl TelegramService {
     fn format_field_name(field: &str) -> String {
         match field {
             "title" => "Title".to_string(),
+            "season" => "Release season".to_string(),
             "release_date" => "Release date".to_string(),
             "status" => "Status".to_string(),
             "episodes" => "Episodes".to_string(),

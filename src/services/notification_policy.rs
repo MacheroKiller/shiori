@@ -11,6 +11,7 @@ impl NotificationPolicy {
                     || change.field_changed == "release_date"
                     || change.field_changed == "status"
                     || change.field_changed == "episodes"
+                    || change.field_changed == "season"
             }),
         }
     }

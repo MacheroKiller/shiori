@@ -1,10 +1,16 @@
 use sqlx::PgPool;
 
-use crate::models::{
-    release::Release,
-    release_event::{ReleaseChange, ReleaseEvent},
-    sync_result::SyncResult,
-    sync_summary::SyncSummary,
+use crate::{
+    models::{
+        release::Release,
+        release_event::{ReleaseChange, ReleaseEvent},
+        season::Season,
+        sync_result::SyncResult,
+    },
+    repositories::{
+        notification_repository::{self, NotificationRepository},
+        season_repository::SeasonRepository,
+    },
 };
 
 use chrono::NaiveDate;
@@ -20,18 +26,35 @@ pub struct StoredRelease {
     pub status: String,
     pub episodes: Option<i32>,
     pub duration: Option<i32>,
+    pub season_id: Option<i64>,
+    pub season_name: Option<String>,
+    pub season_year: Option<i32>,
 }
 
 pub struct ReleaseRepository {
     pool: PgPool,
+    season_repository: SeasonRepository,
+    notification_repository: NotificationRepository,
 }
 
 impl ReleaseRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(
+        pool: PgPool,
+        season_repository: SeasonRepository,
+        notification_repository: NotificationRepository,
+    ) -> Self {
+        Self {
+            pool,
+            season_repository,
+            notification_repository,
+        }
     }
 
-    pub fn detect_changes(stored: &StoredRelease, incoming: &Release) -> Vec<ReleaseChange> {
+    pub fn detect_changes(
+        stored: &StoredRelease,
+        incoming: &Release,
+        season: Option<&Season>,
+    ) -> Vec<ReleaseChange> {
         let mut changes = Vec::new();
 
         // Title
@@ -119,58 +142,99 @@ impl ReleaseRepository {
             });
         }
 
+        // Season
+        let old_season = match (&stored.season_name, stored.season_year) {
+            (Some(name), Some(year)) => Some(format!("{} {}", name, year)),
+            _ => None,
+        };
+
+        let new_season = season
+            .map(|season| format!("{:?} {}", season.name, season.year))
+            .or_else(|| old_season.clone());
+
+        if old_season != new_season {
+            changes.push(ReleaseChange {
+                field_changed: "season".to_string(),
+                old_value: old_season,
+                new_value: new_season,
+            });
+        }
+
         changes
     }
-    pub async fn sync_many(&self, releases: Vec<Release>) -> Result<SyncResult, sqlx::Error> {
+
+    pub async fn sync_many(
+        &self,
+        releases: Vec<Release>,
+    ) -> Result<SyncResult, Box<dyn std::error::Error + Send + Sync>> {
         let mut sync_result = SyncResult::default();
         let mut transaction = self.pool.begin().await?;
 
-        for release in releases {
+        for mut release in releases {
             sync_result.summary.total_received += 1;
-            let source = format!("{:?}", release.source);
+
+            let source_name = format!("{:?}", release.source);
 
             let release_date = release.release_date.as_ref().and_then(|date| {
-                match (date.year, date.month, date.day) {
-                    (Some(year), Some(month), Some(day)) => {
-                        chrono::NaiveDate::from_ymd_opt(year as i32, month, day)
-                    }
-                    _ => None,
-                }
+                chrono::NaiveDate::from_ymd_opt(date.year? as i32, date.month?, date.day?)
             });
 
             // Find existing release
-            let stored = sqlx::query_as::<_, StoredRelease>(
+            let existing_release = sqlx::query_as::<_, StoredRelease>(
                 r#"
-            SELECT
-                id,
-                title,
-                description,
-                genres,
-                image_url,
-                release_date,
-                status,
-                episodes,
-                duration
-            FROM releases
-            WHERE external_id = $1
-              AND source = $2
-            FOR UPDATE
+       SELECT
+    r.id,
+    r.title,
+    r.description,
+    r.genres,
+    r.image_url,
+    r.release_date,
+    r.status,
+    r.episodes,
+    r.duration,
+    r.season_id,
+    s.name AS season_name,
+    s.year AS season_year
+FROM releases r
+LEFT JOIN seasons s ON s.id = r.season_id
+WHERE r.external_id = $1
+  AND r.source = $2
+FOR UPDATE OF r
             "#,
             )
             .bind(release.external_id as i64)
-            .bind(&source)
+            .bind(&source_name)
             .fetch_optional(&mut *transaction)
             .await?;
 
-            match stored {
-                Some(stored) => {
+            // Determine the season based on the release date
+            let mut assigned_season: Option<Season> = None;
+
+            if let Some(release_date) = release_date {
+                let season = Season::from_date(release_date);
+
+                let persisted_season = self
+                    .season_repository
+                    .get_or_create(&mut transaction, season)
+                    .await?;
+
+                release.season_id = persisted_season.id;
+                assigned_season = Some(persisted_season);
+            } else if let Some(existing_release) = &existing_release {
+                // Preserve the previous season when the release date is incomplete
+                release.season_id = existing_release.season_id;
+            }
+
+            match existing_release {
+                Some(existing_release) => {
                     // Detect changes
-                    let mut release = release;
-                    release.id = Some(stored.id as u64);
-                    let changes = Self::detect_changes(&stored, &release);
+                    release.id = Some(existing_release.id as u64);
+
+                    let release_changes =
+                        Self::detect_changes(&existing_release, &release, assigned_season.as_ref());
 
                     // Save changes to history
-                    for change in &changes {
+                    for change in &release_changes {
                         sqlx::query(
                             r#"
                         INSERT INTO release_history (
@@ -182,7 +246,7 @@ impl ReleaseRepository {
                         VALUES ($1, $2, $3, $4)
                         "#,
                         )
-                        .bind(stored.id)
+                        .bind(existing_release.id)
                         .bind(&change.field_changed)
                         .bind(&change.old_value)
                         .bind(&change.new_value)
@@ -203,8 +267,9 @@ impl ReleaseRepository {
                         status = $6,
                         episodes = $7,
                         duration = $8,
-                        last_provider_update = $9
-                    WHERE id = $10
+                        last_provider_update = $9,
+                        season_id = $10
+                    WHERE id = $11
                     "#,
                     )
                     .bind(&release.title)
@@ -216,17 +281,24 @@ impl ReleaseRepository {
                     .bind(release.episodes.map(|value| value as i32))
                     .bind(release.duration.map(|value| value as i32))
                     .bind(release.last_provider_update.map(|value| value as i64))
-                    .bind(stored.id)
+                    .bind(release.season_id)
+                    .bind(existing_release.id)
                     .execute(&mut *transaction)
                     .await?;
 
-                    if changes.is_empty() {
+                    if release_changes.is_empty() {
                         sync_result.summary.unchanged += 1;
                     } else {
-                        sync_result.summary.updated += 1;
-                        sync_result
-                            .events
-                            .push(ReleaseEvent::ReleaseUpdated { release, changes });
+                        let event = ReleaseEvent::ReleaseUpdated {
+                            release,
+                            changes: release_changes,
+                        };
+
+                        self.notification_repository
+                            .enqueue_in_transaction(&mut transaction, &event)
+                            .await?;
+
+                        sync_result.events.push(event);
                     }
                 }
 
@@ -234,25 +306,26 @@ impl ReleaseRepository {
                     // Insert new release
                     let id: i64 = sqlx::query_scalar(
                         r#"
-    INSERT INTO releases (
-        external_id,
-        source,
-        title,
-        description,
-        genres,
-        image_url,
-        release_date,
-        status,
-        episodes,
-        duration,
-        last_provider_update
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-    RETURNING id
-    "#,
+                    INSERT INTO releases (
+                        external_id,
+                        source,
+                        title,
+                        description,
+                        genres,
+                        image_url,
+                        release_date,
+                        status,
+                        episodes,
+                        duration,
+                        last_provider_update,
+                        season_id
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    RETURNING id
+                    "#,
                     )
                     .bind(release.external_id as i64)
-                    .bind(&source)
+                    .bind(&source_name)
                     .bind(&release.title)
                     .bind(&release.description)
                     .bind(&release.genres)
@@ -262,13 +335,20 @@ impl ReleaseRepository {
                     .bind(release.episodes.map(|value| value as i32))
                     .bind(release.duration.map(|value| value as i32))
                     .bind(release.last_provider_update.map(|value| value as i64))
+                    .bind(release.season_id)
                     .fetch_one(&mut *transaction)
                     .await?;
-                    let mut release = release;
+
                     release.id = Some(id as u64);
 
                     sync_result.summary.inserted += 1;
-                    sync_result.events.push(ReleaseEvent::NewRelease(release));
+                    let event = ReleaseEvent::NewRelease(release);
+
+                    self.notification_repository
+                        .enqueue_in_transaction(&mut transaction, &event)
+                        .await?;
+
+                    sync_result.events.push(event);
                 }
             }
         }
@@ -284,20 +364,24 @@ impl ReleaseRepository {
     ) -> Result<Option<StoredRelease>, sqlx::Error> {
         let release = sqlx::query_as::<_, StoredRelease>(
             r#"
-        SELECT
-            id,
-            title,
-            description,
-            genres,
-            image_url,
-            release_date,
-            status,
-            episodes,
-            duration
-        FROM releases
-        WHERE external_id = $1
-          AND source = $2
-        "#,
+    SELECT
+        r.id,
+        r.title,
+        r.description,
+        r.genres,
+        r.image_url,
+        r.release_date,
+        r.status,
+        r.episodes,
+        r.duration,
+        r.season_id,
+        s.name AS season_name,
+        s.year AS season_year
+    FROM releases r
+    LEFT JOIN seasons s ON s.id = r.season_id
+    WHERE r.external_id = $1
+      AND r.source = $2
+    "#,
         )
         .bind(external_id)
         .bind(source)

@@ -1,6 +1,7 @@
 use crate::models::release::Release;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReleaseEvent {
     NewRelease(Release),
 
@@ -10,7 +11,7 @@ pub enum ReleaseEvent {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseChange {
     pub field_changed: String,
     pub old_value: Option<String>,

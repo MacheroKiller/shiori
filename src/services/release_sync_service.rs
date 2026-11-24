@@ -1,6 +1,5 @@
 use crate::{
-    models::{sync_result::SyncResult, sync_summary::SyncSummary},
-    provider::release_provider::ReleaseProvider,
+    models::sync_result::SyncResult, provider::release_provider::ReleaseProvider,
     repositories::release_repository::ReleaseRepository,
 };
 
