@@ -1,18 +1,13 @@
-use std::sync::Arc;
-
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::models::season::{Season, SeasonName, SeasonTrackingStatus};
 
-pub struct SeasonRepository {
-    pool: PgPool,
-}
+pub struct SeasonRepository;
 
 impl SeasonRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new() -> Self {
+        Self
     }
-
     pub async fn get_or_create(
         &self,
         transaction: &mut Transaction<'_, Postgres>,

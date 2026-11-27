@@ -8,8 +8,7 @@ use crate::{
         sync_result::SyncResult,
     },
     repositories::{
-        notification_repository::{self, NotificationRepository},
-        season_repository::SeasonRepository,
+        notification_repository::NotificationRepository, season_repository::SeasonRepository,
     },
 };
 
